@@ -11,7 +11,11 @@ import time
 
 from utils import *
 
-openai.api_key = openai_api_key
+if llm_backend == "ollama":
+    openai.api_base = ollama_base_url
+    openai.api_key = "ollama"
+else:
+    openai.api_key = openai_api_key
 
 def temp_sleep(seconds=0.1):
   time.sleep(seconds)
@@ -69,16 +73,23 @@ def ChatGPT_request(prompt):
     a str of GPT-3's response. 
   """
   # temp_sleep()
-  try: 
-    completion = openai.ChatCompletion.create(
-    model="gpt-3.5-turbo", 
-    messages=[{"role": "user", "content": prompt}]
-    )
-    return completion["choices"][0]["message"]["content"]
-  
-  except: 
-    print ("ChatGPT ERROR")
-    return "ChatGPT ERROR"
+  model = ollama_model if llm_backend == "ollama" else "gpt-3.5-turbo"
+  timeout = ollama_request_timeout if llm_backend == "ollama" else 30
+  if llm_debug:
+    print(f"[LLM] ChatGPT_request | model={model} | prompt_len={len(prompt)} | preview: {prompt[:80].strip()!r}")
+  for attempt in range(3):
+    try:
+      completion = openai.ChatCompletion.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        request_timeout=timeout
+      )
+      return completion["choices"][0]["message"]["content"]
+    except Exception as e:
+      wait = 5 * (2 ** attempt)
+      print(f"ChatGPT ERROR (attempt {attempt + 1}/3): {str(e)} — retrying in {wait}s")
+      time.sleep(wait)
+  return "ChatGPT ERROR"
 
 
 def GPT4_safe_generate_response(prompt, 
@@ -207,21 +218,29 @@ def GPT_request(prompt, gpt_parameter):
     a str of GPT-3's response. 
   """
   temp_sleep()
-  try:
-    response = openai.ChatCompletion.create(
-                model=gpt_parameter["engine"],
-                messages=[{"role": "user", "content": prompt}],
-                temperature=gpt_parameter["temperature"],
-                max_tokens=gpt_parameter["max_tokens"],
-                top_p=gpt_parameter["top_p"],
-                frequency_penalty=gpt_parameter["frequency_penalty"],
-                presence_penalty=gpt_parameter["presence_penalty"],
-                stream=gpt_parameter["stream"],
-                stop=gpt_parameter["stop"],)
-    return response["choices"][0]["message"]["content"]
-  except Exception as e:
-    print(f"Error occurred: {str(e)}")
-    return f"ERROR: {str(e)}"
+  model = ollama_model if llm_backend == "ollama" else gpt_parameter["engine"]
+  timeout = ollama_request_timeout if llm_backend == "ollama" else 30
+  if llm_debug:
+    print(f"[LLM] GPT_request | model={model} | max_tokens={gpt_parameter['max_tokens']} | prompt_len={len(prompt)} | preview: {prompt[:80].strip()!r}")
+  for attempt in range(3):
+    try:
+      response = openai.ChatCompletion.create(
+                  model=model,
+                  messages=[{"role": "user", "content": prompt}],
+                  temperature=gpt_parameter["temperature"],
+                  max_tokens=gpt_parameter["max_tokens"],
+                  top_p=gpt_parameter["top_p"],
+                  frequency_penalty=gpt_parameter["frequency_penalty"],
+                  presence_penalty=gpt_parameter["presence_penalty"],
+                  stream=gpt_parameter["stream"],
+                  stop=gpt_parameter["stop"],
+                  request_timeout=timeout,)
+      return response["choices"][0]["message"]["content"]
+    except Exception as e:
+      wait = 5 * (2 ** attempt)
+      print(f"Error occurred (attempt {attempt + 1}/3): {str(e)} — retrying in {wait}s")
+      time.sleep(wait)
+  return f"ERROR: max retries exceeded"
 
 
 def generate_prompt(curr_input, prompt_lib_file): 
@@ -275,8 +294,15 @@ def safe_generate_response(prompt,
 
 def get_embedding(text, model="text-embedding-ada-002"):
   text = text.replace("\n", " ")
-  if not text: 
+  if not text:
     text = "this is blank"
+  if llm_backend == "ollama":
+    import requests
+    response = requests.post(
+      f"{ollama_base_url.rstrip('/v1').rstrip('/')}/api/embeddings",
+      json={"model": "nomic-embed-text", "prompt": text}
+    )
+    return response.json()["embedding"]
   return openai.Embedding.create(
           input=[text], model=model)['data'][0]['embedding']
 
